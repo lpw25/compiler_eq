@@ -1,0 +1,13 @@
+# OCaml files
+*.annot
+*.cmo
+*.cma
+*.cmi
+*.a
+*.o
+*.cmx
+*.cmxs
+*.cmxa
+
+# Binary
+compiler_eq
