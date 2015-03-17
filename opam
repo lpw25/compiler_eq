@@ -1,0 +1,12 @@
+opam-version: "1.2"
+name: "compiler_eq"
+version: "0.1"
+maintainer: "Leo White <lpw25@cl.cam.ac.uk>"
+authors: "Leo White <lpw25@cl.cam.ac.uk>"
+build: [
+  [make]
+]
+depends: [
+  "cmdliner"
+  "ocamlfind" {build}
+]

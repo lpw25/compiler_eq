@@ -1,0 +1,3 @@
+bin: [
+  "?compiler_eq" {"compiler_eq"}
+]
