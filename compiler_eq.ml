@@ -23,6 +23,12 @@ let check_system cmd = Unix.(match system cmd with
   | WEXITED k -> err (Printf.sprintf "'%s' exited with code %d\n%!" cmd k)
 )
 
+let check_system_relaxed cmd = Unix.(match system cmd with
+  | WSIGNALED _ -> err ("'"^cmd^"' was killed by signal")
+  | WSTOPPED _  -> err ("'"^cmd^"' was stopped by signal")
+  | WEXITED _ -> success
+)
+
 let get_line cmd =
   let ic = Unix.open_process_in cmd in
   try
@@ -38,7 +44,7 @@ let switch2 = "compiler_eq2"
 
 let switch sw c =
   check_system
-    ("opam switch " ^ sw ^ "-y -A " ^ c ^ " --no-switch")
+    ("opam switch " ^ sw ^ " -y -A " ^ c ^ " --no-switch")
 
 let init c1 c2 =
   switch switch1 c1 >>= fun () ->
@@ -86,59 +92,91 @@ let get_packages sw =
   in
     next_line []
 
-let clean_attributes _ _ = []
+let dummy_position =
+  let open Lexing in
+  { pos_fname = "";
+    pos_lnum = 0;
+    pos_bol = 0;
+    pos_cnum = 0; }
 
-let clean_structure mp items =
+let dummy_location =
+  let open Location in
+  { loc_start = dummy_position;
+    loc_end = dummy_position;
+    loc_ghost = true; }
+
+let clean_location cattr cloc mp loc =
+  let open Ast_mapper in
+  let loc =
+    if cloc then dummy_location
+    else loc
+  in
+    default_mapper.location mp loc
+
+let clean_attributes cattr cloc mp attr =
+  let open Ast_mapper in
+    if cattr then []
+    else default_mapper.attributes mp attr
+
+let clean_structure cattr cloc mp items =
   let open Parsetree in
   let open Ast_mapper in
   let items =
-    List.filter
-      (function
-        | { pstr_desc = Pstr_attribute _ } -> false
-        | _ -> true)
-      items
+    if cattr then
+      List.filter
+        (function
+          | { pstr_desc = Pstr_attribute _ } -> false
+          | _ -> true)
+        items
+    else items
   in
     default_mapper.structure mp items
 
-let clean_signature mp items =
+let clean_signature cattr cloc mp items =
   let open Parsetree in
   let open Ast_mapper in
   let items =
-    List.filter
-      (function
-        | { psig_desc = Psig_attribute _ } -> false
-        | _ -> true)
-      items
+    if cattr then
+      List.filter
+        (function
+          | { psig_desc = Psig_attribute _ } -> false
+          | _ -> true)
+        items
+    else items
   in
     default_mapper.signature mp items
 
-let clean_class_structure mp cstr =
+let clean_class_structure cattr cloc mp cstr =
   let open Parsetree in
   let open Ast_mapper in
   let pcstr_fields =
-    List.filter
-      (function
-        | { pcf_desc = Pcf_attribute _ } -> false
-        | _ -> true)
-      cstr.pcstr_fields
+    if cattr then
+      List.filter
+        (function
+          | { pcf_desc = Pcf_attribute _ } -> false
+          | _ -> true)
+        cstr.pcstr_fields
+    else cstr.pcstr_fields
   in
     default_mapper.class_structure
       mp { cstr with pcstr_fields }
 
-let clean_class_signature mp csig =
+let clean_class_signature cattr cloc mp csig =
   let open Parsetree in
   let open Ast_mapper in
   let pcsig_fields =
-    List.filter
-      (function
-        | { pctf_desc = Pctf_attribute _ } -> false
-        | _ -> true)
-      csig.pcsig_fields
+    if cattr then
+      List.filter
+        (function
+          | { pctf_desc = Pctf_attribute _ } -> false
+          | _ -> true)
+        csig.pcsig_fields
+    else csig.pcsig_fields
   in
     default_mapper.class_signature
       mp { csig with pcsig_fields }
 
-let clean_class_field mp cf =
+let clean_class_field cattr cloc mp cf =
   let open Parsetree in
   let open Ast_mapper in
   let pcf_attributes =
@@ -147,7 +185,7 @@ let clean_class_field mp cf =
     default_mapper.class_field
       mp { cf with pcf_attributes }
 
-let clean_class_type_field mp cf =
+let clean_class_type_field cattr cloc mp cf =
   let open Parsetree in
   let open Ast_mapper in
   let pctf_attributes =
@@ -156,36 +194,41 @@ let clean_class_type_field mp cf =
     default_mapper.class_type_field
       mp { cf with pctf_attributes }
 
-let clean_mapper =
+let clean_mapper cattr cloc =
   let open Ast_mapper in
     { default_mapper with
-        attributes = clean_attributes;
-        structure = clean_structure;
-        signature = clean_signature;
-        class_structure = clean_class_structure;
-        class_signature = clean_class_signature;
-        class_field = clean_class_field;
-        class_type_field = clean_class_type_field; }
+        location = clean_location cattr cloc;
+        attributes = clean_attributes cattr cloc;
+        structure = clean_structure cattr cloc;
+        signature = clean_signature cattr cloc;
+        class_structure = clean_class_structure cattr cloc;
+        class_signature = clean_class_signature cattr cloc;
+        class_field = clean_class_field cattr cloc;
+        class_type_field = clean_class_type_field cattr cloc; }
 
-let clean_signature sg =
+let clean_signature cattr cloc sg =
   let open Ast_mapper in
-    clean_mapper.signature clean_mapper
+  let mapper = clean_mapper cattr cloc in
+    mapper.signature mapper
       (Untypeast.untype_signature sg)
 
-let clean_structure str =
+let clean_structure cattr cloc str =
   let open Ast_mapper in
-    clean_mapper.structure clean_mapper
+  let mapper = clean_mapper cattr cloc in
+    mapper.structure mapper
       (Untypeast.untype_structure str)
 
-let eq cmt1 cmt2 =
+let eq cattr cloc cmt1 cmt2 =
   let open Cmt_format in
   let tt1 = read_cmt cmt1 in
   let tt2 = read_cmt cmt2 in
     match tt1.cmt_annots, tt2.cmt_annots with
     | Interface sg1, Interface sg2 ->
-        (clean_signature sg1) = (clean_signature sg2)
+        (clean_signature cattr cloc sg1)
+        = (clean_signature cattr cloc sg2)
     | Implementation str1, Implementation str2 ->
-        (clean_structure str1) = (clean_structure str2)
+        (clean_structure cattr cloc str1)
+        = (clean_structure cattr cloc str2)
     | Packed _, Packed _  -> true
     | _ -> false
 
@@ -207,7 +250,9 @@ let read_files base path =
     let files = loop [] dh in
     Unix.closedir dh;
     files
-  with Unix.Unix_error (Unix.ENOTDIR, _, _) -> []
+  with
+  | Unix.Unix_error (Unix.ENOTDIR, _, _) -> []
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> []
 
 let read_files_rec base path =
   let rec loop acc path =
@@ -241,37 +286,142 @@ let collect pkg =
             (fun cmt -> (cmt, build1 / cmt, build2 / cmt))
             cmts1)
 
-let compare_pkg pkg =
+let compare_pkg cattr cloc pkg =
   collect pkg >>= fun cmts ->
     return
       (List.fold_left
          (fun acc (name, cmt1, cmt2) ->
-            (name, eq cmt1 cmt2)  :: acc)
+            (name, eq cattr cloc cmt1 cmt2)  :: acc)
          [] cmts)
 
-let compare_pkgs pkgs =
-  List.fold_left
-    (fun acc pkg ->
-       compare_pkg pkg >>= fun names ->
-       acc >>= fun acc ->
-       return (names @ acc))
-    (return []) pkgs
+let print_result utf8 color pkg results =
+  let blue s =
+    if color then Printf.sprintf "\027[1;34m%s\027[m" s
+    else s
+  in
+  let red s =
+    if color then Printf.sprintf "\027[31m%s\027[m" s
+    else s
+  in
+  let green s =
+    if color then Printf.sprintf "\027[32m%s\027[m" s
+    else s
+  in
+  let space = " " in
+  let newline = "\n" in
+  let top_left = if utf8 then "\226\148\140" else "+" in
+  let top_centre = if utf8 then "\226\148\172" else "+" in
+  let top_right = if utf8 then "\226\148\144" else "+" in
+  let middle_left = if utf8 then "\226\148\156" else "+" in
+  let middle_right = if utf8 then "\226\148\164" else "+" in
+  let bottom_left = if utf8 then "\226\148\148" else "+" in
+  let bottom_centre = if utf8 then "\226\148\180" else "+" in
+  let bottom_right = if utf8 then "\226\148\152" else "+" in
+  let horizontal = if utf8 then "\226\148\128" else "-" in
+  let vertical = if utf8 then "\226\148\130" else "|" in
+  let equal = if utf8 then "\226\156\147" else "Equal    "  in
+  let not_equal = if utf8 then "\226\156\151" else "Not equal" in
+  let equal_length = if utf8 then 1 else 9 in
+  if results = [] then ()
+  else begin
+    let colored_pkg =
+      if List.for_all (fun (_, result) -> result) results then green pkg
+      else red pkg
+    in
+    let name_length =
+      List.fold_left
+        (fun acc (name, _) -> max acc (String.length name))
+        0 results
+    in
+    let name_length = max name_length (String.length pkg) in
+    let name_width = name_length - 1 in
+    let equal_width = equal_length - 1 in
+    print_string (blue top_left);
+    print_string (blue horizontal);
+    for i = 0 to name_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue horizontal);
+    print_string (blue horizontal);
+    for i = 0 to equal_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue top_right);
+    print_string newline;
+    print_string (blue vertical);
+    print_string space;
+    print_string colored_pkg;
+    for i = String.length pkg to name_width do
+      print_string space done;
+    print_string space;
+    print_string space;
+    print_string space;
+    for i = 0 to equal_width do
+      print_string space done;
+    print_string space;
+    print_string (blue vertical);
+    print_string newline;
+    print_string (blue middle_left);
+    print_string (blue horizontal);
+    for i = 0 to name_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue top_centre);
+    print_string (blue horizontal);
+    for i = 0 to equal_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue middle_right);
+    print_string newline;
+    List.iter
+      (fun (name, result) ->
+         let colored_name =
+           if result then green name else red name
+         in
+         print_string (blue vertical);
+         print_string space;
+         print_string colored_name;
+         for i = String.length name to name_width do
+           print_string space done;
+         print_string space;
+         print_string (blue vertical);
+         print_string space;
+         if result then print_string (green equal)
+         else print_string (red not_equal);
+         print_string space;
+         print_string (blue vertical);
+         print_string newline)
+      results;
+    print_string (blue bottom_left);
+    print_string (blue horizontal);
+    for i = 0 to name_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue bottom_centre);
+    print_string (blue horizontal);
+    for i = 0 to equal_width do
+      print_string (blue horizontal) done;
+    print_string (blue horizontal);
+    print_string (blue bottom_right);
+    print_endline newline
+  end
 
-let print_results names =
-  List.iter
-    (fun (name, result) ->
-       if result then Printf.printf "'%s': equal\n" name
-       else Printf.printf "'%s': not equal\n" name)
-    names
-
-let check pkgs =
+let check cattr cloc utf8 color pkgs =
   let pkgs =
     if pkgs = [] then get_packages switch1
     else return pkgs
   in
-  pkgs >>= compare_pkgs >>= fun results ->
-  print_results results;
-  return ()
+  pkgs >>= fun pkgs ->
+  let res =
+    List.fold_left
+      (fun acc pkg ->
+         acc >>= fun () ->
+         compare_pkg cattr cloc pkg >>= fun results ->
+         print_result utf8 color pkg results;
+         success)
+      success pkgs
+  in
+  res >>= fun () -> success
 
 let write_signature sg =
   let tmp, ch = Filename.open_temp_file "compiler_eq" ".sg" in
@@ -283,7 +433,7 @@ let write_signature sg =
 let diff_signature sg1 sg2 =
   let tmp1 = write_signature sg1 in
   let tmp2 = write_signature sg2 in
-    check_system
+    check_system_relaxed
       ("diff -u " ^ tmp1 ^ " " ^ tmp2)
 
 let write_structure str =
@@ -296,10 +446,10 @@ let write_structure str =
 let diff_structure str1 str2 =
   let tmp1 = write_structure str1 in
   let tmp2 = write_structure str2 in
-    check_system
+    check_system_relaxed
       ("diff -u " ^ tmp1 ^ " " ^ tmp2)
 
-let diff pkg file =
+let diff cattr cloc pkg file =
   build_dir switch1 pkg >>= fun build1 ->
   build_dir switch2 pkg >>= fun build2 ->
   let cmt1 = build1 / file in
@@ -309,9 +459,13 @@ let diff pkg file =
   let tt2 = read_cmt cmt2 in
     match tt1.cmt_annots, tt2.cmt_annots with
     | Interface sg1, Interface sg2 ->
-        diff_signature (clean_signature sg1) (clean_signature sg2)
+        diff_signature
+          (clean_signature cattr cloc sg1)
+          (clean_signature cattr cloc sg2)
     | Implementation str1, Implementation str2 ->
-        diff_structure (clean_structure str1) (clean_structure str2)
+        diff_structure
+          (clean_structure cattr cloc str1)
+          (clean_structure cattr cloc str2)
     | Packed _, Packed _  -> err "Packed"
     | _ -> err "Unmatched"
 
@@ -342,6 +496,28 @@ let file =
   let doc = "file" in
   Arg.(required (pos 1 (some string) None & info ~docv ~doc []))
 
+let unicode =
+  let docv = "BOOL" in
+  let doc = "unicode output" in
+  Arg.(value (opt ~vopt:true bool true & info ~docv ~doc ["unicode"]))
+
+let color =
+  let docv = "BOOL" in
+  let doc = "colored output" in
+  Arg.(value (opt ~vopt:true bool true & info ~docv ~doc ["color"]))
+
+let ignore_attributes =
+  let docv = "BOOL" in
+  let doc = "ignore attributes" in
+  Arg.(value (opt ~vopt:true bool false
+                & info ~docv ~doc ["ignore-attributes"]))
+
+let ignore_locations =
+  let docv = "BOOL" in
+  let doc = "ignore locations" in
+  Arg.(value (opt ~vopt:true bool false
+                & info ~docv ~doc ["ignore-locations"]))
+
 let init_term =
   Term.(ret (pure init $ compiler1 $ compiler2))
 
@@ -361,7 +537,12 @@ let install_info =
 let install_cmd = (install_term, install_info)
 
 let check_term =
-  Term.(ret (pure check $ packages))
+  Term.(ret (pure check
+             $ ignore_attributes
+             $ ignore_locations
+             $ unicode
+             $ color
+             $ packages))
 
 let check_info =
   let doc = "compare compilers" in
@@ -370,7 +551,11 @@ let check_info =
 let check_cmd = (check_term, check_info)
 
 let diff_term =
-  Term.(ret (pure diff $ package $ file))
+  Term.(ret (pure diff
+             $ ignore_attributes
+             $ ignore_locations
+             $ package
+             $ file))
 
 let diff_info =
   let doc = "diff package file" in
