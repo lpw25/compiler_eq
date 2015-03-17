@@ -32,9 +32,9 @@ let get_line cmd =
     | _ -> err ("error with '"^cmd^"'")
   with End_of_file -> err ("error with '"^cmd^"'")
 
-let switch1 = "cmp-tree1"
+let switch1 = "compiler_eq1"
 
-let switch2 = "cmp-tree2"
+let switch2 = "compiler_eq2"
 
 let switch sw c =
   check_system
@@ -53,10 +53,38 @@ let install sw pkgs =
     ("opam install -y -b --switch=" ^ sw ^ " " ^ String.concat " " pkgs)
 
 let install pkgs =
-  force_bin_annot ();
-  install switch1 pkgs >>= fun () ->
-  install switch2 pkgs >>= fun () ->
-  return ()
+  if pkgs = [] then return ()
+  else begin
+    force_bin_annot ();
+    install switch1 pkgs >>= fun () ->
+    install switch2 pkgs >>= fun () ->
+    return ()
+  end
+
+let get_packages sw =
+  let opam_list =
+    Unix.open_process_in ("opam list --switch=" ^ sw ^ " -S -s")
+  in
+  let rec next_line acc =
+    let rec next_pkg acc line =
+      match String.index line ' ' with
+      | exception Not_found ->
+          if line = "" then next_line acc
+          else next_line (line :: acc)
+      | k ->
+        let pkg = String.sub line 0 k in
+        let rest = String.sub line (k+1) (String.length line - k - 1) in
+          next_pkg (pkg :: acc) rest
+    in
+      match input_line opam_list with
+      | exception End_of_file -> begin
+          match Unix.close_process_in opam_list with
+          | Unix.WEXITED 0 -> return acc
+          | _ -> err ("error with 'opam list --switch=" ^ sw ^ " -S -s'")
+        end
+      | line -> next_pkg acc line
+  in
+    next_line []
 
 let clean_attributes _ _ = []
 
@@ -162,10 +190,10 @@ let eq cmt1 cmt2 =
     | _ -> false
 
 let build_dir sw pkg =
-  get_line "opam config var root" >>= fun root ->
-  get_line ("opam show -f version " ^ pkg) >>= fun version ->
+  get_line ("opam config var root") >>= fun root ->
+  get_line ("opam show --switch=" ^ sw ^ " -f version " ^ pkg) >>= fun ver ->
   let build = root / sw / "build" in
-  let pkgv = pkg ^ "." ^ version in
+  let pkgv = pkg ^ "." ^ ver in
     return (build / pkgv)
 
 let read_files base path =
@@ -237,7 +265,11 @@ let print_results names =
     names
 
 let check pkgs =
-  compare_pkgs pkgs >>= fun results ->
+  let pkgs =
+    if pkgs = [] then get_packages switch1
+    else return pkgs
+  in
+  pkgs >>= compare_pkgs >>= fun results ->
   print_results results;
   return ()
 
@@ -298,7 +330,7 @@ let compiler2 =
 let packages =
   let docv = "PACKAGES" in
   let doc = "packages" in
-  Arg.(non_empty (pos_all string [] & info ~docv ~doc []))
+  Arg.(value (pos_all string [] & info ~docv ~doc []))
 
 let package =
   let docv = "PACKAGE" in
